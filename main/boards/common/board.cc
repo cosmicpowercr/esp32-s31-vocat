@@ -1,4 +1,6 @@
 #include "board.h"
+
+#include <algorithm>
 #include "assets/lang_config.h"
 #include "display/display.h"
 #include "settings.h"
@@ -14,6 +16,9 @@
 Board::Board() {
     Settings settings("board", true);
     uuid_ = settings.GetString("uuid");
+    // 某些固件（例如官方出厂固件）会把 UUID 以带引号的 JSON 字符串写进 NVS，
+    // 直接拼进 OTA/激活 JSON 会变成 "uuid":""xxx""，服务端返回 HTTP 400。
+    uuid_.erase(std::remove(uuid_.begin(), uuid_.end(), '"'), uuid_.end());
     if (uuid_.empty()) {
         uuid_ = GenerateUuid();
         settings.SetString("uuid", uuid_);

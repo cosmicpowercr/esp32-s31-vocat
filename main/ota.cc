@@ -125,6 +125,7 @@ NetworkResult<> Ota::CheckVersion() {
                                   "\"protocol\":" + encoded.get());
     }
     std::string method = data.length() > 0 ? "POST" : "GET";
+    ESP_LOGD(TAG, "OTA %s %s (%u bytes)", method.c_str(), url.c_str(), (unsigned)data.size());
     http->SetContent(std::move(data));
 
     if (auto opened = http->Open(method, url); !opened) {
