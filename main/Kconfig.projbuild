@@ -250,6 +250,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_ESP_VOCAT
         bool "Espressif ESP-VoCat"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_ESP_VOCAT_S31
+        bool "Espressif ESP-VoCat S31 (喵伴)"
+        depends on IDF_TARGET_ESP32S31
     config BOARD_TYPE_ESP_SPARKBOT
         bool "Espressif SparkBot"
         depends on IDF_TARGET_ESP32S3
@@ -959,7 +962,8 @@ choice DISPLAY_STYLE
     config USE_EMOTE_MESSAGE_STYLE
         bool "Emote animation style"
         depends on BOARD_TYPE_ESP32_S3_BOX || BOARD_TYPE_ESP32_S3_BOX_3 \
-            || BOARD_TYPE_ESP_VOCAT || BOARD_TYPE_CYBERAI_VOCAT_V2_0 || BOARD_TYPE_CYBERAI_VOCAT_V2_1 \
+            || BOARD_TYPE_ESP_VOCAT || BOARD_TYPE_ESP_VOCAT_S31 \
+            || BOARD_TYPE_CYBERAI_VOCAT_V2_0 || BOARD_TYPE_CYBERAI_VOCAT_V2_1 \
             || BOARD_TYPE_LICHUANG_DEV_S3 || BOARD_TYPE_RYMCU_BIGSMART \
             || BOARD_TYPE_ESP_SENSAIRSHUTTLE || BOARD_TYPE_STACKCHAN
 endchoice

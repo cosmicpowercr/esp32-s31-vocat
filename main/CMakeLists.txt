@@ -33,6 +33,7 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/text_glyph_payload.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
+            "bt/bluetooth_audio.cc"
             "mcp_server.cc"
             "system_info.cc"
             "application.cc"
@@ -349,6 +350,14 @@ elseif(CONFIG_BOARD_TYPE_ESP_VOCAT)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
     set(EMOTE_RESOLUTION "360_360")
     set(ESP_VOCAT_ASSETS_STAGING "${CMAKE_BINARY_DIR}/esp-vocat-assets")
+    set(EMOTE_EXTERNAL_PATH "${ESP_VOCAT_ASSETS_STAGING}")
+elseif(CONFIG_BOARD_TYPE_ESP_VOCAT_S31)
+    set(BOARD_DIR "espressif/esp-vocat-s31")
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
+    set(BUILTIN_ICON_FONT font_material_symbols_20_4)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+    set(EMOTE_RESOLUTION "360_360")
+    set(ESP_VOCAT_ASSETS_STAGING "${CMAKE_BINARY_DIR}/esp-vocat-s31-assets")
     set(EMOTE_EXTERNAL_PATH "${ESP_VOCAT_ASSETS_STAGING}")
 elseif(CONFIG_BOARD_TYPE_CYBERAI_VOCAT_V2_0)
     set(BOARD_DIR "cyberai/cyber-vocat-v2.0")
@@ -1314,7 +1323,7 @@ if(NOTO_FONTS_COMPONENT_PATH)
     set(NOTO_FONTS_PATH "${NOTO_FONTS_COMPONENT_PATH}")
 endif()
 
-if(CONFIG_BOARD_TYPE_ESP_VOCAT OR CONFIG_BOARD_TYPE_CYBERAI_VOCAT_V2_0 OR CONFIG_BOARD_TYPE_CYBERAI_VOCAT_V2_1)
+if(CONFIG_BOARD_TYPE_ESP_VOCAT OR CONFIG_BOARD_TYPE_ESP_VOCAT_S31 OR CONFIG_BOARD_TYPE_CYBERAI_VOCAT_V2_0 OR CONFIG_BOARD_TYPE_CYBERAI_VOCAT_V2_1)
     find_component_by_pattern("esp_emote_assets" EMOTE_ASSETS_COMPONENT EMOTE_ASSETS_PATH)
     if(EMOTE_ASSETS_PATH)
         file(REMOVE_RECURSE "${ESP_VOCAT_ASSETS_STAGING}")
