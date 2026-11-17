@@ -127,8 +127,20 @@ static emote_handle_t InitializeEmote(const esp_lcd_panel_handle_t panel, const 
         .flags =
             {
                 .swap = true,
+#if CONFIG_IDF_TARGET_ESP32S31
+                // 内部 RAM 紧张：单缓冲 + DMA 内存即可，双缓冲会多占 11KB 内部堆
+                .double_buffer = false,
+#else
                 .double_buffer = true,
+#endif
+#if CONFIG_IDF_TARGET_ESP32S31
+                // S31 喵伴：Wi-Fi/BT/摄像头起来后内部堆碎片化，PSRAM 帧缓冲每次
+                // flush 都要临时分配 SPI bounce buffer，会 ESP_ERR_NO_MEM 导致花屏。
+                // 用内部 DMA 内存做帧缓冲，避免每个事务的临时分配。
+                .buff_dma = true,
+#else
                 .buff_dma = false,
+#endif
             },
         .gfx_emote =
             {
@@ -167,6 +179,8 @@ static emote_handle_t InitializeEmote(const esp_lcd_panel_handle_t panel, const 
 EmoteDisplay::EmoteDisplay(const esp_lcd_panel_handle_t panel,
                            const esp_lcd_panel_io_handle_t panel_io, const int width,
                            const int height) {
+    width_ = width;
+    height_ = height;
     emote_handle_ = InitializeEmote(panel, width, height);
 
     const esp_lcd_panel_io_callbacks_t cbs = {
@@ -250,6 +264,115 @@ void EmoteDisplay::SetPowerSaveMode(bool on) {
     if (!emote_handle_) {
         return;
     }
+}
+
+void EmoteDisplay::PreviewTimerCallback(void* arg) {
+    static_cast<EmoteDisplay*>(arg)->HidePreview();
+}
+
+void EmoteDisplay::HidePreview() {
+    if (preview_obj_ != nullptr) {
+        emote_lock(emote_handle_);
+        gfx_obj_set_visible(preview_obj_, false);
+        emote_unlock(emote_handle_);
+    }
+    preview_image_.reset();
+    preview_buf_.clear();
+    preview_buf_.shrink_to_fit();
+    emote_set_obj_visible(emote_handle_, EMT_DEF_ELEM_EYE_ANIM, true);
+    emote_set_obj_visible(emote_handle_, EMT_DEF_ELEM_STATUS_ICON, true);
+    emote_set_anim_visible(emote_handle_, true);
+    ESP_LOGI(TAG, "camera preview hidden");
+}
+
+void EmoteDisplay::ShowPreview(std::unique_ptr<LvglImage> image) {
+    const lv_img_dsc_t* src = image->image_dsc();
+    if (src == nullptr || src->data == nullptr) {
+        return;
+    }
+    const int sw = src->header.w;
+    const int sh = src->header.h;
+    const int sstride = src->header.stride ? src->header.stride : sw * 2;
+    if (sw <= 0 || sh <= 0) {
+        return;
+    }
+
+    // 屏幕是 360x360 的圆屏：取画面中心的正方形，避免显示被拉伸
+    const int cw = std::min(sw, width_);
+    const int ch = std::min(sh, height_);
+    if (cw <= 0 || ch <= 0) {
+        ESP_LOGW(TAG, "camera preview: invalid crop %dx%d (screen %dx%d, image %dx%d)", cw, ch,
+                 width_, height_, sw, sh);
+        return;
+    }
+    const int x0 = (sw - cw) / 2;
+    const int y0 = (sh - ch) / 2;
+
+    preview_buf_.resize(static_cast<size_t>(cw) * ch * 2);
+    const uint8_t* src_data = src->data;
+    // gfx 直接把图源按“原生 framebuffer 顺序”拷贝到 emote 帧缓冲，而本屏是 16bit
+    // 字节交换（emote 配置 swap=true）、摄像头给的是 RGB565 little-endian，
+    // 所以这里逐像素交换高低字节，否则颜色会错。
+    for (int y = 0; y < ch; ++y) {
+        const uint8_t* src_row = src_data + static_cast<size_t>(y0 + y) * sstride + x0 * 2;
+        uint8_t* dst_row = &preview_buf_[static_cast<size_t>(y) * cw * 2];
+        for (int x = 0; x < cw; ++x) {
+            dst_row[x * 2] = src_row[x * 2 + 1];
+            dst_row[x * 2 + 1] = src_row[x * 2];
+        }
+    }
+
+    preview_dsc_ = {};
+    preview_dsc_.header.magic = 0x19;  // C_ARRAY_HEADER_MAGIC
+    preview_dsc_.header.cf = GFX_COLOR_FORMAT_RGB565;
+    preview_dsc_.header.w = cw;
+    preview_dsc_.header.h = ch;
+    preview_dsc_.header.stride = cw * 2;
+    preview_dsc_.data_size = preview_buf_.size();
+    preview_dsc_.data = preview_buf_.data();
+
+    if (preview_obj_ == nullptr) {
+        preview_obj_ = emote_create_obj_by_type(emote_handle_, EMOTE_OBJ_TYPE_IMAGE, "camera_preview");
+        if (preview_obj_ == nullptr) {
+            ESP_LOGW(TAG, "camera preview: cannot create image object");
+            preview_buf_.clear();
+            return;
+        }
+    }
+
+    esp_err_t src_ret = ESP_FAIL;
+    emote_lock(emote_handle_);
+    src_ret = gfx_img_set_src(preview_obj_, &preview_dsc_);
+    gfx_obj_set_visible(preview_obj_, true);
+    gfx_obj_align(preview_obj_, GFX_ALIGN_CENTER, 0, 0);
+    // 只隐藏眼睛/文字等元素，不动整个 anim 层（自定义图片对象挂在同一层时会被一起隐藏）
+    emote_set_obj_visible(emote_handle_, EMT_DEF_ELEM_EYE_ANIM, false);
+    emote_set_obj_visible(emote_handle_, EMT_DEF_ELEM_STATUS_ICON, false);
+    emote_unlock(emote_handle_);
+    if (src_ret != ESP_OK) {
+        ESP_LOGW(TAG, "camera preview: gfx_img_set_src failed: %s", esp_err_to_name(src_ret));
+    }
+
+    preview_image_ = std::move(image);
+
+    if (preview_timer_ == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = PreviewTimerCallback;
+        args.arg = this;
+        args.name = "cam_preview";
+        ESP_ERROR_CHECK(esp_timer_create(&args, &preview_timer_));
+    }
+    esp_timer_stop(preview_timer_);
+    esp_timer_start_once(preview_timer_, 5 * 1000 * 1000);
+    ESP_LOGI(TAG, "camera preview shown (%dx%d crop from %dx%d), 5s", cw, ch, sw, sh);
+}
+
+void EmoteDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
+    if (image == nullptr) {
+        HidePreview();
+        return;
+    }
+    ShowPreview(std::move(image));
 }
 
 void EmoteDisplay::SetPreviewImage(const void* image) {

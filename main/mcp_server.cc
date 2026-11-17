@@ -24,6 +24,10 @@
 #include "lvgl_theme.h"
 #include "settings.h"
 
+#if CONFIG_BT_ENABLED
+#include "bt/bluetooth_audio.h"
+#endif
+
 #define TAG "MCP"
 
 McpServer::McpServer() {}
@@ -97,6 +101,53 @@ void McpServer::AddCommonTools() {
                 });
     }
 
+#endif
+
+#if CONFIG_BT_ENABLED
+    {
+        AddTool("self.bluetooth.get_status",
+                "Get Bluetooth audio (A2DP sink) status: whether the Bluetooth stack is "
+                "running, whether a phone is connected, and the device name to pair with.",
+                PropertyList(),
+                [](const PropertyList& properties, const McpRequestContext& context) -> ToolResult {
+                    (void)properties;
+                    (void)context;
+                    return BluetoothAudio::GetInstance().GetStatusJson();
+                });
+        AddTool("self.bluetooth.set_discoverable",
+                "Allow or stop phones from discovering this device over Bluetooth.",
+                PropertyList({Property("enabled", kPropertyTypeBoolean)}),
+                [](const PropertyList& properties, const McpRequestContext& context) -> ToolResult {
+                    (void)context;
+                    bool enabled = properties["enabled"].value<bool>();
+                    BluetoothAudio::GetInstance().SetDiscoverable(enabled);
+                    return BluetoothAudio::GetInstance().GetStatusJson();
+                });
+        AddTool("self.bluetooth.media_control",
+                "Control playback on the connected phone: play, pause, next, prev.",
+                PropertyList({Property("action", kPropertyTypeString)}),
+                [](const PropertyList& properties, const McpRequestContext& context) -> ToolResult {
+                    (void)context;
+                    std::string action = properties["action"].value<std::string>();
+                    int command = -1;
+                    if (action == "play") {
+                        command = 0;
+                    } else if (action == "pause") {
+                        command = 1;
+                    } else if (action == "next") {
+                        command = 2;
+                    } else if (action == "prev") {
+                        command = 3;
+                    }
+                    if (command < 0) {
+                        return std::unexpected("Unknown action, use play/pause/next/prev");
+                    }
+                    BluetoothAudio::GetInstance().SendMediaCommand(command);
+                    return BluetoothAudio::GetInstance().GetStatusJson();
+                });
+    }
+#endif
+
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
@@ -128,7 +179,6 @@ void McpServer::AddCommonTools() {
                     return std::move(*result);
                 });
     }
-#endif
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), std::make_move_iterator(original_tools.begin()),

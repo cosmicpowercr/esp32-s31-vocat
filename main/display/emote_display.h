@@ -3,9 +3,11 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <memory>
+#include <vector>
 #include <string>
 #include "display.h"
 #include "expression_emote.h"
+#include "lvgl_image.h"
 
 namespace emote {
 
@@ -31,6 +33,8 @@ public:
     virtual void UpdateStatusBar(bool update_all = false) override;
     virtual void SetPowerSaveMode(bool on) override;
     virtual void SetPreviewImage(const void* image);
+    // 拍照预览：把 LVGL 图片对象盖在表情上，显示 5 秒后恢复表情
+    virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
 
     bool StopAnimDialog();
     virtual bool InsertAnimDialog(const char* emoji_name, uint32_t duration_ms) override;
@@ -49,6 +53,14 @@ private:
     virtual void Unlock() override;
 
     emote_handle_t emote_handle_ = nullptr;
+    gfx_obj_t* preview_obj_ = nullptr;
+    std::unique_ptr<LvglImage> preview_image_;
+    gfx_image_dsc_t preview_dsc_ = {};
+    std::vector<uint8_t> preview_buf_;
+    esp_timer_handle_t preview_timer_ = nullptr;
+    static void PreviewTimerCallback(void* arg);
+    void ShowPreview(std::unique_ptr<LvglImage> image);
+    void HidePreview();
 };
 
 }  // namespace emote
