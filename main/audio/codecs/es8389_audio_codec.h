@@ -14,12 +14,14 @@ private:
     const audio_codec_data_if_t* data_if_ = nullptr;
     const audio_codec_ctrl_if_t* ctrl_if_ = nullptr;
     const audio_codec_if_t* codec_if_ = nullptr;
+    const audio_codec_if_t* codec_if_in_ = nullptr;
     const audio_codec_gpio_if_t* gpio_if_ = nullptr;
 
     esp_codec_dev_handle_t output_dev_ = nullptr;
     esp_codec_dev_handle_t input_dev_ = nullptr;
     bool output_device_opened_ = false;
     gpio_num_t pa_pin_ = GPIO_NUM_NC;
+    int slot_bits_ = 16;
     std::mutex data_if_mutex_;
 
     void CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din);
@@ -30,7 +32,8 @@ private:
 public:
     Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate, int output_sample_rate,
         gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
-        gpio_num_t pa_pin, uint8_t es8389_addr, bool use_mclk = true, int input_channels = 1, int output_channels = 1);
+        gpio_num_t pa_pin, uint8_t es8389_addr, bool use_mclk = true, int input_channels = 1, int output_channels = 1,
+        int slot_bits = 16);
     virtual ~Es8389AudioCodec();
 
     virtual void SetOutputVolume(int volume) override;

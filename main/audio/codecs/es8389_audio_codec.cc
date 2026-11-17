@@ -1,12 +1,18 @@
 #include "es8389_audio_codec.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 static const char TAG[] = "Es8389AudioCodec";
 
 Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate, int output_sample_rate,
     gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
-    gpio_num_t pa_pin, uint8_t es8389_addr, bool use_mclk, int input_channels, int output_channels) {
+    gpio_num_t pa_pin, uint8_t es8389_addr, bool use_mclk, int input_channels, int output_channels,
+    int slot_bits) {
+    slot_bits_ = slot_bits;
     duplex_ = true; // 是否双工
     input_reference_ = false; // 是否使用参考输入，实现回声消除
     input_channels_ = input_channels; // 输入通道数
@@ -46,9 +52,16 @@ Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     es8389_cfg.use_mclk = use_mclk;
     es8389_cfg.hw_gain.pa_voltage = 5.0;
     es8389_cfg.hw_gain.codec_dac_voltage = 3.3;
+    es8389_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC;
     codec_if_ = es8389_codec_new(&es8389_cfg);
-
     assert(codec_if_ != NULL);
+
+    // DAC 和 ADC 各自一个 codec 实例：官方固件（esp_board_manager / brookesia）
+    // 就是 audio_dac、audio_adc 两个独立 esp_codec_dev，各自跑一遍 es8389_open。
+    // 共用一个实例时，输入打开只会走 set_fs，不会再做 ADC 相关的初始化。
+    es8389_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_ADC;
+    codec_if_in_ = es8389_codec_new(&es8389_cfg);
+    assert(codec_if_in_ != NULL);
 
     esp_codec_dev_cfg_t outdev_cfg = {
         .dev_type = ESP_CODEC_DEV_TYPE_OUT,
@@ -60,7 +73,7 @@ Es8389AudioCodec::Es8389AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
 
     esp_codec_dev_cfg_t indev_cfg = {
         .dev_type = ESP_CODEC_DEV_TYPE_IN,
-        .codec_if = codec_if_,
+        .codec_if = codec_if_in_,
         .data_if = data_if_,
     };
     input_dev_ = esp_codec_dev_new(&indev_cfg);
@@ -76,6 +89,7 @@ Es8389AudioCodec::~Es8389AudioCodec() {
     ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     esp_codec_dev_delete(input_dev_);
 
+    audio_codec_delete_codec_if(codec_if_in_);
     audio_codec_delete_codec_if(codec_if_);
     audio_codec_delete_ctrl_if(ctrl_if_);
     audio_codec_delete_gpio_if(gpio_if_);
@@ -106,11 +120,11 @@ void Es8389AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,
         },
         .slot_cfg = {
-            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+            .data_bit_width = (slot_bits_ == 32) ? I2S_DATA_BIT_WIDTH_32BIT : I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width = (slot_bits_ == 32) ? I2S_SLOT_BIT_WIDTH_32BIT : I2S_SLOT_BIT_WIDTH_AUTO,
             .slot_mode = I2S_SLOT_MODE_STEREO,
             .slot_mask = I2S_STD_SLOT_BOTH,
-            .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .ws_width = (slot_bits_ == 32) ? I2S_DATA_BIT_WIDTH_32BIT : I2S_DATA_BIT_WIDTH_16BIT,
             .ws_pol = false,
             .bit_shift = true,
             .left_align = true,
@@ -150,8 +164,8 @@ void Es8389AudioCodec::EnableInput(bool enable) {
     }
     if (enable) {
         esp_codec_dev_sample_info_t fs = {
-            .bits_per_sample = 16,
-            .channel = (uint8_t)input_channels_,
+            .bits_per_sample = (uint8_t)slot_bits_,
+            .channel = 2,
             .channel_mask = 0,
             .sample_rate = (uint32_t)input_sample_rate_,
             .mclk_multiple = 0,
@@ -173,7 +187,7 @@ void Es8389AudioCodec::EnableOutput(bool enable) {
         if (!output_device_opened_) {
             // 播放 16bit，声道数跟随 output_channels_
             esp_codec_dev_sample_info_t fs = {
-                .bits_per_sample = 16,
+                .bits_per_sample = (uint8_t)slot_bits_,
                 .channel = (uint8_t)output_channels_,
                 .channel_mask = 0,
                 .sample_rate = (uint32_t)output_sample_rate_,
@@ -204,14 +218,63 @@ void Es8389AudioCodec::EnableOutput(bool enable) {
 }
 
 int Es8389AudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    if (!input_enabled_) {
+        return samples;
     }
+    // ES8389 的 I2S 必须按 2 声道帧收发；上层（AFE）仍然按单声道使用，这里下混
+    constexpr int ch = 2;
+
+    if (slot_bits_ == 32) {
+        static std::vector<int32_t> raw;
+        raw.resize(static_cast<size_t>(samples) * ch);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(
+            esp_codec_dev_read(input_dev_, raw.data(), raw.size() * sizeof(int32_t)));
+        if (ch == 2) {
+            for (int i = 0; i < samples; ++i) {
+                int32_t l = raw[2 * i] >> 16;
+                int32_t r = raw[2 * i + 1] >> 16;
+                dest[i] = (int16_t)((l + r) / 2);
+            }
+        } else {
+            for (int i = 0; i < samples; ++i) {
+                dest[i] = (int16_t)(raw[i] >> 16);
+            }
+        }
+    } else {
+        static std::vector<int16_t> raw16;
+        raw16.resize(static_cast<size_t>(samples) * ch);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(
+            esp_codec_dev_read(input_dev_, raw16.data(), raw16.size() * sizeof(int16_t)));
+        if (ch == 2) {
+            for (int i = 0; i < samples; ++i) {
+                dest[i] = (int16_t)(((int)raw16[2 * i] + raw16[2 * i + 1]) / 2);
+            }
+        } else {
+            memcpy(dest, raw16.data(), samples * sizeof(int16_t));
+        }
+    }
+
     return samples;
 }
 
 int Es8389AudioCodec::Write(const int16_t* data, int samples) {
     if (output_enabled_) {
+        if (slot_bits_ == 32) {
+            // ES8389 在无 MCLK 时要求 32bit 槽宽：16bit PCM 左移 16 位放进 32bit slot
+            std::vector<int32_t> out(static_cast<size_t>(samples) * (output_channels_ > 1 ? output_channels_ : 1));
+            for (int i = 0; i < samples; ++i) {
+                int32_t v = static_cast<int32_t>(data[i]) << 16;
+                if (output_channels_ > 1) {
+                    for (int ch = 0; ch < output_channels_; ++ch) {
+                        out[static_cast<size_t>(i) * output_channels_ + ch] = v;
+                    }
+                } else {
+                    out[i] = v;
+                }
+            }
+            ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(output_dev_, out.data(), out.size() * sizeof(int32_t)));
+            return samples;
+        }
         if (output_channels_ > 1) {
             // xiaozhi 全链路产出单声道 PCM；双声道输出时复制到 L/R 两路，
             // 否则样本数不匹配会导致 I2S 欠载/杂音。

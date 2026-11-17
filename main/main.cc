@@ -9,6 +9,11 @@
 
 #include "application.h"
 
+#if CONFIG_BT_ENABLED
+#include "bt/bluetooth_audio.h"
+static void bluetooth_audio_start() { BluetoothAudio::GetInstance().Start(); }
+#endif
+
 #define TAG "main"
 
 extern "C" void app_main(void)
@@ -25,5 +30,10 @@ extern "C" void app_main(void)
     // Initialize and run the application
     auto& app = Application::GetInstance();
     app.Initialize();
+
+#if CONFIG_BT_ENABLED
+    // 经典蓝牙 A2DP Sink（手机连上后当蓝牙音箱播放音乐）
+    bluetooth_audio_start();
+#endif
     app.Run();  // This function runs the main event loop and never returns
 }

@@ -145,6 +145,9 @@ public:
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
+    // 把外部 PCM（已重采样为 codec 输出采样率的单声道 16bit）插入播放队列，
+    // 供蓝牙 A2DP 音乐等非 Opus 音源使用。队列满时返回 false，由调用方丢弃。
+    bool PushPcmToPlayback(std::vector<int16_t>&& pcm);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
     void ResetDecoder();
     void SetModelsList(srmodel_list_t* models_list);
